@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Web Push Test</title>
+</head>
+<body>
+  <h1>Web Push Test</h1>
+  <button onclick="subscribe()">Subscribe</button>
+  <script>
+    async function subscribe() {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js');
+        console.log('Service Worker registered');
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: 'BIpGadUKYC9-z6Pt0ghYDO2JH12vSX6rPvsJPLXJDGS52Nix5iZcfZ4xf0QAcDgkCn2pBEEbmuwU3q-LRm9uz30' // VAPID public key’ünü buraya ekle
+        });
+        console.log('Subscription:', JSON.stringify(subscription));
+        alert('Subscription: ' + JSON.stringify(subscription));
+      } catch (error) {
+        console.error('Subscription failed:', error);
+        alert('Error: ' + error.message);
+      }
+    }
+  </script>
+</body>
+</html>
