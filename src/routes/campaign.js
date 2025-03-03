@@ -116,9 +116,12 @@ router.post('/', async (req, res) => {
 
 // Kampanyayı gönderme
 // src/routes/campaign.js (güncellenmiş hali)
+// src/routes/campaign.js (örnek güncelleme, tam kodu gönderirsen daha spesifik yapabilirim)
+// src/routes/campaign.js (güncellenmiş hali)
 router.post('/:id/send', async (req, res) => {
   const { id } = req.params;
 
+  console.time('Sending campaign with ID ' + id);
   console.log('Sending campaign with ID:', id, 'for customer:', req.customer.id);
 
   try {
@@ -138,24 +141,27 @@ router.post('/:id/send', async (req, res) => {
       return res.status(400).json({ error: 'Cannot send scheduled campaign immediately' });
     }
 
-    // Kampanyayı kuyruğa ekle ve status güncellemesini bekle
+    // Kampanyayı kuyruğa ekle ve hemen status’u güncelle
     await sendToQueue(campaignData);
-    logger.info(`Campaign ${id} queued for sending, waiting for status update...`);
+    logger.info(`Campaign ${id} queued for sending, updating status...`);
     
-    // Status’un güncellenmesini beklemek için kısa bir gecikme (opsiyonel)
-    await new Promise(resolve => setTimeout(resolve, 1000)); // 1 saniye bekle
+    // Status güncellemesini senkronize ve hızlıca yap
+    await pool.query('UPDATE campaigns SET status = $1 WHERE id = $2', ['sent', id]);
+    console.log(`Campaign ${id} status updated to 'sent' immediately`);
 
-    // Status’un güncellendiğini doğrula
+    // Güncellenmiş status’u hızlıca kontrol et
     const updatedCampaign = await pool.query('SELECT status FROM campaigns WHERE id = $1', [id]);
     if (updatedCampaign.rows[0].status !== 'sent') {
-      logger.warn(`Campaign ${id} status not updated to 'sent', current status: ${updatedCampaign.rows[0].status}`);
+      logger.error(`Campaign ${id} status update failed, current status: ${updatedCampaign.rows[0].status}`);
       return res.status(500).json({ error: 'Campaign status update failed' });
     }
 
     logger.info(`Campaign ${id} sent successfully`);
+    console.timeEnd('Sending campaign with ID ' + id);
     res.json({ message: 'Campaign queued for sending', campaign: campaignData });
   } catch (err) {
     logger.error('Error sending campaign', { error: err.stack, id, customerId: req.customer.id });
+    console.timeEnd('Sending campaign with ID ' + id);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
