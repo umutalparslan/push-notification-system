@@ -1,9 +1,9 @@
-// src/components/CampaignCreate.js (güncellenmiş hali)
-import React, { useState, useEffect } from 'react';
+// src/components/CampaignCreate.js
+import React, { useState, useEffect, useCallback } from 'react';
 import { Container, Form, Button, Alert, Row, Col, ProgressBar } from 'react-bootstrap';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
-import jwt from 'jsonwebtoken'; // JSON Web Token kütüphanesini ekle
+import jwt from 'jsonwebtoken';
 
 const CampaignCreate = ({ token }) => {
   const [formData, setFormData] = useState({
@@ -17,7 +17,7 @@ const CampaignCreate = ({ token }) => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [progress, setProgress] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false); // Tekrarlı submit’i engelle
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -25,68 +25,65 @@ const CampaignCreate = ({ token }) => {
       try {
         const response = await axios.get('http://localhost:3000/api/customers/applications', {
           headers: { Authorization: `Bearer ${token}` },
+          timeout: 5000,
         });
         if (Array.isArray(response.data)) {
           setApps(response.data);
-          if (response.data.length === 0) {
-            setError('No applications found for this customer');
-          }
+          if (response.data.length === 0) setError('No applications found for this customer');
         } else {
-          setApps([]);
           setError('Unexpected response format from server');
         }
       } catch (err) {
         setError(err.response?.data?.error || 'Failed to fetch applications');
-        setApps([]);
       }
     };
     fetchApps();
   }, [token]);
 
-  const handleChange = (e) => {
+  const handleChange = useCallback((e) => {
     if (e.target.name === 'application_ids') {
       const value = Array.from(e.target.selectedOptions, option => option.value);
-      setFormData({ ...formData, application_ids: value });
+      setFormData(prev => ({ ...prev, application_ids: value }));
     } else {
-      setFormData({ ...formData, [e.target.name]: e.target.value });
+      setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
     }
-  };
+  }, []);
 
-  const handleSegmentChange = (e) => {
+  const handleSegmentChange = useCallback((e) => {
     const { name, value } = e.target;
-    setFormData({
-      ...formData,
-      segment_query: { ...(formData.segment_query || {}), [name]: value }
-    });
-  };
+    setFormData(prev => ({
+      ...prev,
+      segment_query: { ...(prev.segment_query || {}), [name]: value }
+    }));
+  }, []);
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
-    if (isSubmitting) return; // Tekrarlı submit’i engelle
+    if (isSubmitting) return;
     setIsSubmitting(true);
-    console.log('Form data being sent:', JSON.stringify(formData, null, 2)); //Daha detaylı log
+    setError('');
+    setSuccess('');
+    setProgress(0);
+
     try {
-      const response = await axios.post('http://localhost:3000/api/campaigns', {
-        ...formData
-      }, {
+      console.log('Form data being sent:', JSON.stringify(formData, null, 2));
+      const response = await axios.post('http://localhost:3000/api/campaigns', formData, {
         headers: { Authorization: `Bearer ${token}` },
+        timeout: 5000,
       });
       console.log('Campaign response:', response.data);
       const campaignId = response.data.id;
 
-      // Token’ı log’la ve decode et
-      console.log('JWT Token:', token);
       const decoded = jwt.decode(token);
-      console.log('Decoded Token:', decoded);
       if (!decoded || !decoded.customer_id) {
-        setError('Invalid token or customer ID not found in token');
+        setError('Invalid token or customer ID not found');
         setIsSubmitting(false);
         return;
       }
 
-      // Kampanya ID’sini doğrula
       const validateResponse = await axios.get(`http://localhost:3000/api/campaigns/${campaignId}`, {
         headers: { Authorization: `Bearer ${token}` },
+        timeout: 5000,
       });
       if (!validateResponse.data || validateResponse.data.customer_id !== decoded.customer_id) {
         setError(`Invalid campaign or not authorized. Campaign customer_id: ${validateResponse.data?.customer_id}, Token customer_id: ${decoded.customer_id}`);
@@ -97,51 +94,49 @@ const CampaignCreate = ({ token }) => {
       setSuccess('Campaign created, sending...');
       setProgress(10);
 
-      // Kampanyanın status’ünü kontrol ederek gönderimi bekle
-// src/components/CampaignCreate.js (güncellenmiş hali)
-const checkCampaignStatus = async (maxRetries = 30, interval = 500) => {
-  let retries = 0;
-  const check = async () => {
-    try {
-      const statusResponse = await axios.get(`http://localhost:3000/api/campaigns/${campaignId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 10000, // 10 saniye timeout (daha uzun bekleme)
-      });
-      const campaign = statusResponse.data;
-      console.log('Campaign status check:', campaign);
-      if (campaign.status === 'sent') {
-        setProgress(100);
-        setTimeout(() => navigate('/dashboard'), 1000);
-        setIsSubmitting(false);
-        return;
-      }
-      if (campaign.status === 'draft' && retries < maxRetries) {
-        retries++;
-        setProgress(prev => Math.min(prev + (90 / maxRetries), 90)); // Daha hızlı progress
-        setTimeout(check, interval); // 500ms aralıklarla kontrol et
-      } else {
-        setError('Campaign failed to send: Timeout or status not updated');
-        setIsSubmitting(false);
-      }
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to check campaign status');
-      console.error('Error checking campaign status:', err);
-      setIsSubmitting(false);
-    }
-  };
-  check();
-};
+      const checkCampaignStatus = async (retries = 20, interval = 200) => {
+        let attempt = 0;
+        const check = async () => {
+          try {
+            const statusResponse = await axios.get(`http://localhost:3000/api/campaigns/${campaignId}`, {
+              headers: { Authorization: `Bearer ${token}` },
+              timeout: 2000,
+            });
+            const campaign = statusResponse.data;
+            console.log('Campaign status check:', campaign);
+            if (campaign.status === 'sent') {
+              setProgress(100);
+              setTimeout(() => navigate('/dashboard'), 500);
+              setIsSubmitting(false);
+              return;
+            }
+            if (attempt < retries) {
+              attempt++;
+              setProgress(prev => Math.min(prev + (90 / retries), 90));
+              setTimeout(check, interval);
+            } else {
+              throw new Error('Campaign send timeout');
+            }
+          } catch (err) {
+            setError(err.response?.data?.error || 'Failed to check campaign status');
+            console.error('Error checking campaign status:', err);
+            setIsSubmitting(false);
+          }
+        };
+        await check();
+      };
 
-// handleSubmit içinde çağır:
-setSuccess('Campaign created, sending...');
-setProgress(10);
-checkCampaignStatus(); // maxRetries ve interval varsayılan değerlerle
+      await axios.post(`http://localhost:3000/api/campaigns/${campaignId}/send`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 2000,
+      });
+      await checkCampaignStatus();
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to create campaign');
-      console.error('Error creating campaign:', err.response?.data);
+      setError(err.response?.data?.error || 'Failed to create or send campaign');
+      console.error('Error creating/sending campaign:', err);
       setIsSubmitting(false);
     }
-  };
+  }, [token, formData, navigate]);
 
   return (
     <Container className="py-4">
@@ -204,7 +199,7 @@ checkCampaignStatus(); // maxRetries ve interval varsayılan değerlerle
             label="Everyone"
             name="target"
             value="everyone"
-            onChange={() => setFormData({ ...formData, segment_query: null })}
+            onChange={() => setFormData(prev => ({ ...prev, segment_query: null }))}
             checked={!formData.segment_query}
           />
           <Form.Check
@@ -212,7 +207,7 @@ checkCampaignStatus(); // maxRetries ve interval varsayılan değerlerle
             label="Segment"
             name="target"
             value="segment"
-            onChange={() => setFormData({ ...formData, segment_query: {} })}
+            onChange={() => setFormData(prev => ({ ...prev, segment_query: {} }))}
             checked={!!formData.segment_query}
           />
         </Form.Group>

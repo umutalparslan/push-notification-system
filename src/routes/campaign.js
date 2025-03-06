@@ -9,7 +9,7 @@ router.get('/:id', async (req, res) => {
   const { id } = req.params;
 
   try {
-    const customerId = req.customer.id; // JWT’den al
+    const customerId = req.customer.id;
     const campaign = await pool.query('SELECT * FROM campaigns WHERE id = $1 AND customer_id = $2', [id, customerId]);
     if (campaign.rows.length === 0) {
       logger.warn(`Campaign fetch failed: not found for id ${id}, customer ${customerId}`);
@@ -27,34 +27,22 @@ router.get('/:id', async (req, res) => {
 // Kampanya listeleme (GET /)
 router.get('/', async (req, res) => {
   try {
-    const customerId = req.customer.id; // authMiddleware’den geliyor
+    const customerId = req.customer.id;
     const campaigns = await pool.query('SELECT * FROM campaigns WHERE customer_id = $1', [customerId]);
 
-    // Her kampanya için bildirim istatistiklerini al
     const campaignList = await Promise.all(campaigns.rows.map(async (camp) => {
       const stats = await pool.query(
         'SELECT status, COUNT(*) as count FROM notifications WHERE campaign_id = $1 GROUP BY status',
         [camp.id]
       );
-      const result = {
-        sent: 0,
-        delivered: 0,
-        opened: 0,
-        errors: 0
-      };
+      const result = { sent: 0, delivered: 0, opened: 0, errors: 0 };
       stats.rows.forEach(row => {
         if (row.status === 'sent') result.sent = parseInt(row.count);
         if (row.status === 'delivered') result.delivered = parseInt(row.count);
         if (row.status === 'opened') result.opened = parseInt(row.count);
         if (row.status === 'failed') result.errors = parseInt(row.count);
       });
-      return {
-        ...camp,
-        sent: result.sent,
-        delivered: result.delivered,
-        opened: result.opened,
-        errors: result.errors
-      };
+      return { ...camp, ...result };
     }));
 
     logger.info(`Campaigns listed for customer ${customerId}`);
@@ -69,15 +57,13 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   const { title, message, application_ids, segment_query, scheduled_at } = req.body;
 
-  console.log('Received campaign request body:', JSON.stringify(req.body, null, 2)); // Daha detaylı log
-
   if (!title || !message || !application_ids || !Array.isArray(application_ids)) {
     logger.warn('Campaign creation attempt with missing or invalid fields', { body: req.body });
     return res.status(400).json({ error: 'title, message, and application_ids (array) are required' });
   }
 
-  const customerId = req.customer.id; // JWT’den dinamik olarak al
-  console.log('Customer ID from token:', customerId); // JWT’den gelen customer_id’yi log’la
+  const customerId = req.customer.id;
+  console.log('Customer ID from token:', customerId);
 
   const campaignSegment = segment_query || null;
   let scheduledDate = null;
@@ -103,8 +89,8 @@ router.post('/', async (req, res) => {
     }
 
     const result = await pool.query(
-      'INSERT INTO campaigns (customer_id, title, message, segment_query, scheduled_at, application_ids) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [customerId, title, message, campaignSegment, scheduledDate, application_ids]
+      'INSERT INTO campaigns (customer_id, title, message, segment_query, scheduled_at, application_ids, status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [customerId, title, message, campaignSegment, scheduledDate, application_ids, 'draft']
     );
     logger.info(`New campaign created: ${result.rows[0].id} for customer ${customerId}`);
     res.status(201).json(result.rows[0]);
@@ -114,24 +100,22 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Kampanyayı gönderme
-// src/routes/campaign.js (güncellenmiş hali)
-// src/routes/campaign.js (örnek güncelleme, tam kodu gönderirsen daha spesifik yapabilirim)
-// src/routes/campaign.js (güncellenmiş hali)
+// Kampanyayı RabbitMQ ile kuyruğa ekle
+// src/routes/campaign.js (güncellenmiş hali, hata kontrolü ve log’larla)
 router.post('/:id/send', async (req, res) => {
   const { id } = req.params;
 
-  console.time('Sending campaign with ID ' + id);
-  console.log('Sending campaign with ID:', id, 'for customer:', req.customer.id);
+  console.time('Queuing campaign with ID ' + id);
+  console.log('Queuing campaign with ID:', id, 'for customer:', req.customer.id);
 
   try {
-    const customerId = req.customer.id; // JWT’den al
-    const campaign = await pool.query('SELECT * FROM campaigns WHERE id = $1 AND status = $2 AND customer_id = $3', [id, 'draft', customerId]);
+    const customerId = req.customer.id;
+    const campaign = await pool.query('SELECT * FROM campaigns WHERE id = $1 AND status = $2 AND customer_id = $3', [id, 'draft', customerId]); // 'draft' yerine 'queued' kontrol et
     if (campaign.rows.length === 0) {
-      logger.warn(`Campaign send attempt failed: not found or not draft for id ${id}, customer ${customerId}`);
+      logger.warn(`Campaign send attempt failed: not found or not queued for id ${id}, customer ${customerId}`);
       return res.status(404).json({ 
-        error: `Campaign with ID ${id} not found or not in draft status for customer ${customerId}`,
-        details: { id, customerId, status: 'draft' }
+        error: `Campaign with ID ${id} not found or not in queued status for customer ${customerId}`,
+        details: { id, customerId, status: 'queued' }
       });
     }
 
@@ -141,27 +125,22 @@ router.post('/:id/send', async (req, res) => {
       return res.status(400).json({ error: 'Cannot send scheduled campaign immediately' });
     }
 
-    // Kampanyayı kuyruğa ekle ve hemen status’u güncelle
-    await sendToQueue(campaignData);
-    logger.info(`Campaign ${id} queued for sending, updating status...`);
-    
-    // Status güncellemesini senkronize ve hızlıca yap
-    await pool.query('UPDATE campaigns SET status = $1 WHERE id = $2', ['sent', id]);
-    console.log(`Campaign ${id} status updated to 'sent' immediately`);
-
-    // Güncellenmiş status’u hızlıca kontrol et
-    const updatedCampaign = await pool.query('SELECT status FROM campaigns WHERE id = $1', [id]);
-    if (updatedCampaign.rows[0].status !== 'sent') {
-      logger.error(`Campaign ${id} status update failed, current status: ${updatedCampaign.rows[0].status}`);
-      return res.status(500).json({ error: 'Campaign status update failed' });
+    // RabbitMQ kuyruğuna ekle
+    try {
+      await sendToQueue(campaignData);
+      await pool.query('UPDATE campaigns SET status = $1 WHERE id = $2', ['sent', id]); // 'sent' olarak güncelle
+      console.log(`Campaign ${id} queued and status updated to 'sent' immediately`);
+    } catch (queueErr) {
+      logger.error('Error queuing campaign to RabbitMQ', { error: queueErr.stack, id, customerId });
+      return res.status(500).json({ error: 'Failed to queue campaign', details: queueErr.message });
     }
 
-    logger.info(`Campaign ${id} sent successfully`);
-    console.timeEnd('Sending campaign with ID ' + id);
+    logger.info(`Campaign ${id} queued for sending`);
+    console.timeEnd('Queuing campaign with ID ' + id);
     res.json({ message: 'Campaign queued for sending', campaign: campaignData });
   } catch (err) {
     logger.error('Error sending campaign', { error: err.stack, id, customerId: req.customer.id });
-    console.timeEnd('Sending campaign with ID ' + id);
+    console.timeEnd('Queuing campaign with ID ' + id);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
@@ -171,7 +150,7 @@ router.get('/:id/report', async (req, res) => {
   const { id } = req.params;
 
   try {
-    const customerId = req.customer.id; // JWT’den al
+    const customerId = req.customer.id;
     const campaignCheck = await pool.query('SELECT id FROM campaigns WHERE id = $1 AND customer_id = $2', [id, customerId]);
     if (campaignCheck.rows.length === 0) {
       logger.warn(`Campaign report fetch failed: not found for id ${id}`);
