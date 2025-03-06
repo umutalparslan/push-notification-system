@@ -6,6 +6,7 @@ const customerRoutes = require('./src/routes/customer');
 const campaignRoutes = require('./src/routes/campaign');
 const authMiddleware = require('./src/middleware/auth');
 const subscriptionRoutes = require('./src/routes/subscription');
+const segmentsRoutes = require('./routes/segments');
 require('dotenv').config();
 require('./src/scheduler');
 
@@ -30,6 +31,7 @@ app.use('/api/customers', (req, res, next) => {
 app.use('/api/campaigns', authMiddleware, campaignRoutes);
 
 app.use('/api/external/subscription', subscriptionRoutes);
+app.use('/api/segments', authMiddleware, segmentsRoutes);
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend/public/index.html'));
