@@ -62,13 +62,14 @@ function initializeAPNs(credentials) {
 }
 
 // Veritabanından token’ları al
+// src/queue.js (güncellenmiş `getTokensFromDB` fonksiyonu)
 async function getTokensFromDB(applicationId, segmentQuery, batchSize = 10000) {
   try {
     let tokens = [];
     let offset = 0;
 
-    do {
-      let tokensResult; // Her iterasyonda yeni bir `tokensResult` tanımla
+    while (true) {
+      let tokensResult;
       try {
         if (segmentQuery) {
           const queryParts = Object.entries(segmentQuery).map(([key, value]) => {
@@ -102,10 +103,19 @@ async function getTokensFromDB(applicationId, segmentQuery, batchSize = 10000) {
         break; // Sonuç yoksa veya geçersizse döngüden çık
       }
 
+      if (tokensResult.rows.length === 0) {
+        break; // Hiç satır yoksa döngüden çık
+      }
+
       tokens = tokens.concat(tokensResult.rows);
       offset += batchSize;
       console.log(`Fetched tokens for application ${applicationId}, offset ${offset}:`, tokensResult.rows); // Her batch’te alınan token’ları log’la
-    } while (tokensResult.rows.length === batchSize); // Sadece `tokensResult.rows.length` kontrol et
+
+      // Eğer batch boyutu dolmadıysa, daha fazla token yok demektir
+      if (tokensResult.rows.length < batchSize) {
+        break;
+      }
+    }
 
     if (tokens.length > 0) {
       console.log('All fetched tokens for application:', tokens); // Tüm token’ları log’la
@@ -122,7 +132,7 @@ async function getTokensFromDB(applicationId, segmentQuery, batchSize = 10000) {
 }
 
 // Sıralı push gönderimi
-// src/queue.js (güncellenmiş `processPushBatch` fonksiyonu, opsiyonel)
+// src/queue.js (güncellenmiş `processPushBatch` fonksiyonu)
 async function processPushBatch(campaign, app, tokensBatch) {
   const { credentials, platform, id: application_id } = app;
   const uniqueTokens = [...new Set(tokensBatch.map(t => t.device_token))].map(token => {

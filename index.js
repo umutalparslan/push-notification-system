@@ -5,6 +5,7 @@ const cors = require('cors'); // CORS’u ekledik
 const customerRoutes = require('./src/routes/customer');
 const campaignRoutes = require('./src/routes/campaign');
 const authMiddleware = require('./src/middleware/auth');
+const subscriptionRoutes = require('./src/routes/subscription');
 require('dotenv').config();
 require('./src/scheduler');
 
@@ -27,6 +28,8 @@ app.use('/api/customers', (req, res, next) => {
 }, customerRoutes);
 
 app.use('/api/campaigns', authMiddleware, campaignRoutes);
+
+app.use('/api/external/subscription', subscriptionRoutes);
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend/public/index.html'));
