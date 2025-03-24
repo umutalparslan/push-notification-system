@@ -1,69 +1,44 @@
-// src/queue.js (güncellenmiş hali, hata kontrolü ve log’larla)
 const amqp = require('amqplib');
-const admin = require('firebase-admin');
-const apn = require('apn');
-const webpush = require('web-push');
-const redis = require('redis');
-const pool = require('./db'); // Tek bir `pool` tanımı
+const pool = require('./db');
 const logger = require('./logger');
+const apn = require('apn');
+const admin = require('firebase-admin');
+const webpush = require('web-push');
 
-const redisClient = redis.createClient({ url: 'redis://localhost:6379', retry_strategy: options => 1000 });
-redisClient.on('error', err => console.error('Redis Client Error:', err));
-redisClient.connect().catch(err => console.error('Redis connection failed:', err));
+let channel;
+const queueName = 'campaign_queue';
 
-let globalChannel = null;
+// RabbitMQ bağlantısı
+async function connectRabbitMQ() {
+  try {
+    const connection = await amqp.connect(process.env.RABBITMQ_URL || 'amqp://localhost');
+    channel = await connection.createChannel();
+    await channel.assertQueue(queueName, { durable: true });
+    logger.info('RabbitMQ connected and queue asserted');
+    return channel;
+  } catch (err) {
+    logger.error('RabbitMQ connection failed', { error: err.stack });
+    throw err;
+  }
+}
 
-async function getChannel() {
-  if (!globalChannel) {
-    try {
-      console.time('RabbitMQ connection');
-      const conn = await amqp.connect('amqp://localhost:5672');
-      globalChannel = await conn.createChannel();
-      await globalChannel.assertQueue('campaign_queue', { durable: true });
-      console.timeEnd('RabbitMQ connection');
-      console.log('RabbitMQ channel initialized successfully');
-    } catch (err) {
-      logger.error('RabbitMQ connection error:', { error: err.stack });
-      throw err;
+// Kuyruğa mesaj gönder
+async function sendToQueue(campaign) {
+  try {
+    if (!channel) {
+      await connectRabbitMQ();
     }
+    const message = Buffer.from(JSON.stringify(campaign));
+    channel.sendToQueue(queueName, message, { persistent: true });
+    logger.info(`Campaign ${campaign.id} sent to queue`);
+  } catch (err) {
+    logger.error('Error sending campaign to queue', { error: err.stack, campaign });
+    throw err;
   }
-  return globalChannel;
 }
 
-// FCM başlatma
-function initializeFCM(credentials) {
-  if (credentials.type === 'fcm') {
-    return admin.initializeApp({
-      credential: admin.credential.cert(credentials.service_account),
-    }, `app-${Date.now()}`);
-  }
-  throw new Error('Unsupported FCM credentials');
-}
-
-// APNs başlatma
-function initializeAPNs(credentials) {
-  if (credentials.type === 'p8') {
-    return new apn.Provider({
-      token: {
-        key: Buffer.from(credentials.key, 'base64'),
-        keyId: credentials.key_id,
-        teamId: credentials.team_id,
-      },
-      production: false,
-    });
-  } else if (credentials.type === 'p12') {
-    return new apn.Provider({
-      pfx: Buffer.from(credentials.certificate, 'base64'),
-      passphrase: credentials.password,
-      production: false,
-    });
-  }
-  throw new Error('Unsupported APNs credentials');
-}
-
-// Veritabanından token’ları al
-// src/queue.js (güncellenmiş `getTokensFromDB` fonksiyonu)
-async function getTokensFromDB(applicationId, segmentQuery, batchSize = 10000) {
+// Token’ları veritabanından çek (segmentasyona göre)
+async function getTokensFromDB(applicationId, sendTo, segmentQuery, batchSize = 10000) {
   try {
     let tokens = [];
     let offset = 0;
@@ -71,12 +46,18 @@ async function getTokensFromDB(applicationId, segmentQuery, batchSize = 10000) {
     while (true) {
       let tokensResult;
       try {
-        if (segmentQuery) {
+        if (sendTo === 'segment' && segmentQuery) {
           const queryParts = Object.entries(segmentQuery).map(([key, value]) => {
             if (typeof value === 'string' && value.startsWith('>')) {
-              return `(attributes->>'${key}')::int > ${parseInt(value.slice(1))}`;
+              return `(u.attributes->>'${key}')::int > ${parseInt(value.slice(1))}`;
+            } else if (typeof value === 'string' && value.startsWith('<')) {
+              return `(u.attributes->>'${key}')::int < ${parseInt(value.slice(1))}`;
+            } else if (typeof value === 'string' && value.includes('-')) {
+              const [min, max] = value.split('-').map(Number);
+              return `(u.attributes->>'${key}')::int BETWEEN ${min} AND ${max}`;
+            } else {
+              return `u.attributes->>'${key}' = '${value}'`;
             }
-            return `attributes->>'${key}' = '${value}'`;
           });
           tokensResult = await pool.query(
             `SELECT t.device_token, t.id as token_id, t.user_id
@@ -94,45 +75,61 @@ async function getTokensFromDB(applicationId, segmentQuery, batchSize = 10000) {
         }
       } catch (queryErr) {
         logger.error('Database query failed:', { error: queryErr.stack, applicationId, offset });
-        break; // Sorgu başarısızsa döngüden çık
+        break;
       }
 
-      // `tokensResult`’in tanımlı olup olmadığını kontrol et
       if (!tokensResult || !tokensResult.rows) {
         console.warn('No results or invalid response from database query:', { applicationId, offset });
-        break; // Sonuç yoksa veya geçersizse döngüden çık
+        break;
       }
 
       if (tokensResult.rows.length === 0) {
-        break; // Hiç satır yoksa döngüden çık
+        break;
       }
 
       tokens = tokens.concat(tokensResult.rows);
       offset += batchSize;
-      console.log(`Fetched tokens for application ${applicationId}, offset ${offset}:`, tokensResult.rows); // Her batch’te alınan token’ları log’la
+      console.log(`Fetched tokens for application ${applicationId}, offset ${offset}, count: ${tokensResult.rows.length}`);
 
-      // Eğer batch boyutu dolmadıysa, daha fazla token yok demektir
       if (tokensResult.rows.length < batchSize) {
         break;
       }
     }
 
     if (tokens.length > 0) {
-      console.log('All fetched tokens for application:', tokens); // Tüm token’ları log’la
+      console.log(`Total fetched tokens for application ${applicationId}: ${tokens.length}`);
     } else {
-      logger.warn('No tokens found for application:', { applicationId, segmentQuery });
-      return []; // Boş dizi döndür, hata fırlatma
+      logger.warn('No tokens found for application:', { applicationId, sendTo, segmentQuery });
+      return [];
     }
 
     return tokens;
   } catch (err) {
-    logger.error('Error fetching tokens from DB:', { error: err.stack, applicationId, segmentQuery });
+    logger.error('Error fetching tokens from DB:', { error: err.stack, applicationId, sendTo, segmentQuery });
     throw err;
   }
 }
 
-// Sıralı push gönderimi
-// src/queue.js (güncellenmiş `processPushBatch` fonksiyonu)
+// APNs için başlatma
+function initializeAPNs(credentials) {
+  return new apn.Provider({
+    token: {
+      key: credentials.key,
+      keyId: credentials.key_id,
+      teamId: credentials.team_id,
+    },
+    production: false,
+  });
+}
+
+// FCM için başlatma
+function initializeFCM(credentials) {
+  return admin.initializeApp({
+    credential: admin.credential.cert(credentials),
+  });
+}
+
+// Push bildirimlerini gönder
 async function processPushBatch(campaign, app, tokensBatch) {
   const { credentials, platform, id: application_id } = app;
   const uniqueTokens = [...new Set(tokensBatch.map(t => t.device_token))].map(token => {
@@ -140,11 +137,11 @@ async function processPushBatch(campaign, app, tokensBatch) {
     return row;
   });
 
-  console.log(`Processing push for app ${application_id}, tokens:`, uniqueTokens); // Yeni token’ları log’la
+  console.log(`Processing push for app ${application_id}, tokens:`, uniqueTokens);
 
   if (uniqueTokens.length === 0) {
     logger.warn('No unique tokens found for application:', { application_id, campaign_id: campaign.id });
-    return; // Hiç token yoksa işlemi sonlandır
+    return;
   }
 
   try {
@@ -165,7 +162,7 @@ async function processPushBatch(campaign, app, tokensBatch) {
           'INSERT INTO notifications (campaign_id, user_id, token_id, application_id, status, error_message) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (campaign_id, token_id, application_id) DO UPDATE SET status = EXCLUDED.status, error_message = EXCLUDED.error_message',
           [campaign.id, token.user_id, token.token_id || null, application_id, status, errorMessage]
         );
-        console.log(`Inserted notification for token ${token.device_token}, status: ${status}`); // Her token için log ekle
+        console.log(`Inserted notification for token ${token.device_token}, status: ${status}`);
       }
       apnProvider.shutdown();
     } else if (platform === 'android') {
@@ -233,65 +230,30 @@ async function processPushBatch(campaign, app, tokensBatch) {
   }
 }
 
-// RabbitMQ consumer
-async function startQueue() {
-  try {
-    const channel = await getChannel();
-    console.log('Queue worker started, waiting for campaigns...');
-
-    channel.consume('campaign_queue', async (msg) => {
-      const campaign = JSON.parse(msg.content.toString());
-      console.log('Processing campaign from queue:', campaign);
-
+// Kuyruktan mesaj tüketimi
+connectRabbitMQ().then(() => {
+  channel.consume(queueName, async (msg) => {
+    if (msg !== null) {
       try {
-        const apps = await pool.query('SELECT credentials, platform, id FROM applications WHERE id = ANY($1)', [campaign.application_ids]);
-        if (apps.rows.length === 0) {
-          logger.error('No applications found for campaign:', { application_ids: campaign.application_ids });
-          channel.ack(msg);
-          return;
-        }
+        const campaign = JSON.parse(msg.content.toString());
+        console.log('Processing campaign from queue:', campaign);
 
-        // Token’ları batch’ler halinde al ve sıralı işleme
-        const batchSize = 10000; // Her batch 10,000 token
+        const apps = await pool.query('SELECT * FROM applications WHERE id = ANY($1)', [campaign.application_ids]);
         for (const app of apps.rows) {
-          const tokens = await getTokensFromDB(app.id, campaign.segment_query, batchSize);
-          const tokenBatches = [];
-          for (let i = 0; i < tokens.length; i += batchSize) {
-            tokenBatches.push(tokens.slice(i, i + batchSize));
-          }
-
-          // Sıralı işlem
-          for (const batch of tokenBatches) {
-            await processPushBatch(campaign, app, batch);
-          }
+          const tokens = await getTokensFromDB(app.id, campaign.send_to, campaign.segment_query);
+          await processPushBatch(campaign, app, tokens);
         }
 
-        // Status güncellemesini işlemden sonra yap
-        await pool.query('UPDATE campaigns SET status = $1 WHERE id = $2', ['sent', campaign.id]);
-        console.log(`Campaign ${campaign.id} status updated to 'sent'`);
+        channel.ack(msg);
       } catch (err) {
-        logger.error('Error processing campaign:', { error: err.stack, campaign_id: campaign.id });
+        logger.error('Error processing campaign:', { error: err.stack, campaign_id: campaign?.id });
+        channel.nack(msg, false, false);
       }
-
-      channel.ack(msg);
-    }, { noAck: false });
-  } catch (err) {
-    logger.error('Queue error:', { error: err.stack });
-  }
-}
-
-// Kampanyayı kuyruğa ekle
-async function sendToQueue(campaign) {
-  try {
-    const channel = await getChannel();
-    channel.sendToQueue('campaign_queue', Buffer.from(JSON.stringify(campaign)), { persistent: true });
-    console.log('Campaign sent to queue:', campaign);
-  } catch (err) {
-    logger.error('Error sending campaign to queue:', { error: err.stack, campaign });
-    throw err;
-  }
-}
-
-startQueue();
+    }
+  }, { noAck: false });
+}).catch(err => {
+  logger.error('Failed to start RabbitMQ consumer:', { error: err.stack });
+  process.exit(1);
+});
 
 module.exports = { sendToQueue };

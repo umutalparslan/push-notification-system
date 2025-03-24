@@ -6,7 +6,7 @@ const customerRoutes = require('./src/routes/customer');
 const campaignRoutes = require('./src/routes/campaign');
 const authMiddleware = require('./src/middleware/auth');
 const subscriptionRoutes = require('./src/routes/subscription');
-const segmentsRoutes = require('./routes/segments');
+const segmentsRoutes = require('./src/routes/segments');
 require('dotenv').config();
 require('./src/scheduler');
 

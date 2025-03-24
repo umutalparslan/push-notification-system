@@ -1,34 +1,43 @@
 {
-  "name": "frontend",
-  "version": "0.1.0",
+  "name": "material-dashboard-2-react",
+  "version": "2.2.0",
   "private": true,
+  "author": "Creative Tim",
+  "license": "See license in https://www.creative-tim.com/license",
+  "description": "React version of Material Dashboard 2 by Creative Tim",
+  "bugs": {
+    "url": "https://github.com/creativetimofficial/material-dashboard-react/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/creativetimofficial/material-dashboard-react.git"
+  },
   "dependencies": {
-    "@testing-library/dom": "^10.4.0",
-    "@testing-library/jest-dom": "^6.6.3",
-    "@testing-library/react": "^16.2.0",
-    "@testing-library/user-event": "^13.5.0",
-    "axios": "^1.7.9",
-    "bootstrap": "^5.3.3",
-    "buffer": "^6.0.3",
-    "crypto-browserify": "^3.12.1",
-    "framer-motion": "^12.4.7",
-    "jsonwebtoken": "^9.0.2",
-    "process": "^0.11.10",
-    "react": "^19.0.0",
-    "react-bootstrap": "^2.10.9",
-    "react-dom": "^19.0.0",
-    "react-router-dom": "^7.2.0",
+    "@emotion/cache": "11.10.8",
+    "@emotion/react": "11.10.8",
+    "@emotion/styled": "11.10.8",
+    "@mui/icons-material": "5.11.16",
+    "@mui/material": "5.12.3",
+    "chart.js": "4.3.0",
+    "chroma-js": "2.4.2",
+    "prop-types": "15.8.1",
+    "react": "18.2.0",
+    "react-chartjs-2": "5.2.0",
+    "react-dom": "18.2.0",
+    "react-github-btn": "1.4.0",
+    "react-router-dom": "6.11.0",
     "react-scripts": "5.0.1",
-    "stream-browserify": "^3.0.0",
-    "util": "^0.12.5",
-    "vm-browserify": "^1.1.2",
-    "web-vitals": "^2.1.4"
+    "react-table": "7.8.0",
+    "stylis": "4.1.4",
+    "stylis-plugin-rtl": "2.1.1",
+    "yup": "1.1.1"
   },
   "scripts": {
-    "start": "react-app-rewired start",
-    "build": "react-app-rewired build",
-    "test": "react-app-rewired test",
-    "eject": "react-scripts eject"
+    "start": "GENERATE_SOURCEMAP=false react-scripts start",
+    "build": "GENERATE_SOURCEMAP=false react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject",
+    "install:clean": "rm -rf node_modules/ && rm -rf package-lock.json && npm install && npm start"
   },
   "eslintConfig": {
     "extends": [
@@ -49,7 +58,16 @@
     ]
   },
   "devDependencies": {
-    "customize-cra": "^1.0.0",
-    "react-app-rewired": "^2.2.1"
+    "eslint": "8.39.0",
+    "eslint-config-prettier": "8.8.0",
+    "eslint-plugin-import": "2.27.5",
+    "eslint-plugin-jsx-a11y": "6.7.1",
+    "eslint-plugin-prettier": "4.2.1",
+    "eslint-plugin-react": "7.32.2",
+    "eslint-plugin-react-hooks": "4.6.0",
+    "prettier": "2.8.8"
+  },
+  "overrides": {
+    "svgo": "3.0.2"
   }
 }
